@@ -258,8 +258,8 @@ SET FullDate = MAKE_DATE(Year,Month,DayofMonth)
 SELECT Year, Month, DayofMonth, FullDate
 FROM flights_staging2
 
---Analysis 1: When is the best time to travel with minimum delay?
-CREATE TABLE analysis_1 (
+--Analysis 1.1: When is the best time to travel with minimum delay?
+CREATE TABLE analysis_1_1 (
 Hour smallint,
 MeanDelay float
 );
@@ -278,14 +278,14 @@ UPDATE flights_staging2
 SET CRSDepTime_timeformat = '00:00'
 WHERE CRSDepTime_timeformat >= '24:00'
 
-INSERT INTO analysis_1
+INSERT INTO analysis_1_1
 SELECT EXTRACT(HOUR FROM CRSDepTime_timeformat) as Hour, AVG(average_delay) as MeanDelay
 FROM flights_staging2
 GROUP BY Hour;
 
-SELECT * FROM analysis_1
+SELECT * FROM analysis_1_1
 
---Analysis 2: Is the best time to travel consistent throughout the years?
+--Analysis 1.2: Is the best time to travel consistent throughout the years?
 
 SELECT year,
 CASE
@@ -299,13 +299,13 @@ AVG(average_delay) AS MeanDelay
 FROM flights_staging2
 GROUP BY  year, TimeOfDay
 
-CREATE TABLE analysis_2 (
+CREATE TABLE analysis_1_2 (
 year varchar(10),
 TimeOfDay varchar(50),
 MeanDelay float
 );
 
-INSERT INTO analysis_2 
+INSERT INTO analysis_1_2
 SELECT year,
 CASE
         WHEN EXTRACT(HOUR FROM CRSDepTime_timeformat) BETWEEN 5 AND 11 THEN 'Morning'
@@ -318,7 +318,7 @@ AVG(average_delay) AS MeanDelay
 FROM flights_staging2
 GROUP BY  year, TimeOfDay;
 
---Analysis 3: When is the best season to travel?
+--Analysis 1.3: When is the best season to travel?
 SELECT
 CASE
 		WHEN month BETWEEN 3 AND 5 THEN 'spring'
@@ -330,12 +330,12 @@ AVG(average_delay) AS MeanDelay
 FROM flights_staging2
 GROUP BY Season
 
-CREATE TABLE analysis_3(
+CREATE TABLE analysis_1_3(
 Season varchar(10),
 MeanDelay float
 );
 
-INSERT INTO analysis_3
+INSERT INTO analysis_1_3
 SELECT
 CASE
 		WHEN month BETWEEN 3 AND 5 THEN 'spring'
@@ -347,15 +347,16 @@ AVG(average_delay) AS MeanDelay
 FROM flights_staging2
 GROUP BY Season
 
-SELECT * FROM analysis_3
+SELECT * FROM analysis_1_3
 
---Analysis 4: Does older aircrafts suffer more delays?
+--Analysis 2: Does older aircrafts suffer more delays?
 
 --Certain year columns contain null values. We will use the issue date year as the manufactured year.
 SELECT CAST(SPLIT_PART(issue_date, '/', 3) AS INTEGER) as year_part, year
 FROM plane_data
 WHERE issue_date IS NOT NULL;
 
+--Creating a new column to store the year of issue date
 ALTER TABLE plane_data
 ADD COLUMN issue_date_year smallint;
 
@@ -363,6 +364,7 @@ UPDATE plane_data
 SET issue_date_year = CAST(SPLIT_PART(issue_date, '/', 3) AS INTEGER)
 WHERE issue_date IS NOT NULL;
 
+--Certain issue dates are recorded in a two-digit year format. To standardize the data, all years are converted to a four-digit format (yyyy).
 UPDATE plane_data
 SET issue_date_year = 
 	CASE
@@ -371,14 +373,17 @@ SET issue_date_year =
 			ELSE issue_date_year
 		END;
 
+--Check if there are still issue dates that are recorded in two-digit year format.
 SELECT issue_date_year
 FROM plane_data
 WheRE issue_date_year < 100;
 
+--Substitute year with issue_date_year for year with null or 0 value.
 UPDATE plane_data
 SET year = issue_date_year
 WHERE year IS NULL AND year = 0;
 
+--Check if there are any discrepencies in year column.
 SELECT DISTINCT year FROM plane_data
 ORDER BY year desc
 
@@ -394,40 +399,26 @@ JOIN plane_data AS p
 on f.TailNum = p.TailNum
 WHERE f.Year - p.year NOT BETWEEN 0 AND 51
 
-CREATE TABLE analysis_4(
+
+--Creating an empty table to store aggregated data for analysis 2.
+CREATE TABLE analysis_2(
 PlaneAge smallint,
 MeanDelay float,
 Frequency int
 )
 
-INSERT INTO analysis_4
+INSERT INTO analysis_2
 SELECT f.Year - p.year AS PlaneAge, AVG(average_delay) AS MeanDelay, COUNT(*) AS Frequency
 FROM flights_staging2 AS f
 JOIN plane_data AS p
 on f.TailNum = p.TailNum
 GROUP BY PlaneAge;
 
-SELECT * FROM analysis_4
+SELECT * FROM analysis_2
 ORDER BY PlaneAge
 
-CREATE TABLE analysis_4_1(
-PlaneAge smallint,
-average_delay float,
-flight serial
-)
-
-INSERT INTO analysis_4_1 (PlaneAge, average_delay)
-SELECT PlaneAge, average_delay
-FROM (
-    SELECT f.Year - p.year AS PlaneAge, average_delay
-    FROM flights_staging2 AS f
-    JOIN plane_data AS p
-    ON f.TailNum = p.TailNum
-    WHERE f.Year - p.year BETWEEN 1 AND 41
-) AS full_data
-WHERE RANDOM() < 0.01;
-
-WITH analysis_4_cte AS
+--Calculating the Pearson's correlation coefficient for plane age and average delay.
+WITH analysis_2_cte AS
 (SELECT f.average_delay AS Delay, f.Year - p.year AS PlaneAge
 FROM flights_staging2 AS f
 JOIN plane_data AS p
@@ -436,36 +427,44 @@ WHERE f.Year - p.year NOT BETWEEN 0 AND 51)
 SELECT corr(Delay, PlaneAge) AS Correlation
 FROM analysis_4_cte
 
---Analysis 5: Which Flight number has the highe
-SELECT AVG(Diverted) AS DivertedProportion
-FROM flights_staging2
 
-CREATE TABLE analysis_5_1 (
+--Analysis 3: How does the popularity of flight routes change over time?
+CREATE TABLE analysis_3
+(
+PathID varchar(50),
+Year smallint,
+Frequency integer,
+RowNum integer,
+FlightPercentage Float
+)
+
+INSERT INTO analysis_3
+WITH YearlyFlightFreqCTE AS
+(SELECT Year, COUNT(*) AS YearTotal
+FROM flights_staging2
+GROUP BY Year)
+SELECT a.Pathid, a.Year, a.Frequency, ROW_NUMBER() OVER (PARTITION BY a.Year ORDER BY a.Year Desc, a.Frequency Desc) AS RowNum, a.Frequency / b.YearTotal AS FlightPercentage
+FROM(
+SELECT Pathid, Year, COUNT(*) AS Frequency
+FROM flights_staging2
+GROUP BY Year, Pathid) AS a
+JOIN YearlyFlightFreqCTE AS b
+ON a.Year = b.Year
+
+--Analysis 4: How do the top diverted flight routes compare to the average diversion rate of all flights?
+CREATE TABLE analysis_4 (
 Diverted smallint,
 Frequency integer
 );
 
-INSERT INTO analysis_5_1
+--Creating a contingency table that counts the number of diverted and non-diverted flights.
+INSERT INTO analysis_4
 SELECT Diverted, COUNT(*) as Frequency
 FROM flights_Staging2
 GROUP BY Diverted
 
-SELECT FlightNum, AVG(Diverted) AS DivertProportion, COUNT(*) AS Frequency, Origin, Dest
-FROM flights_staging2
-GROUP BY FlightNum, Origin, Dest
-ORDER BY DivertProportion DESC
-
-SELECT f.FlightNum, f.DivertProportion, f.Frequency, f.Origin, f.Dest, a1.lat AS OriginLat, a1.long AS OriginLong, a2.lat AS DestLat, a2.long AS DestLong
-FROM(SELECT FlightNum, AVG(Diverted) AS DivertProportion, COUNT(*) AS Frequency, Origin, Dest
-FROM flights_staging2
-GROUP BY FlightNum, Origin, Dest
-ORDER BY DivertProportion DESC) AS f
-JOIN airports AS a1
-ON f.Origin = a1.iata
-JOIN airports AS a2
-ON f.Dest = a2.iata
-
-CREATE TABLE analysis_5(
+--Creating a table to store the aggregated data for divert proportion and frequency by PathID.
+CREATE TABLE analysis_4_1(
 PathId Varchar(50),
 DivertProportion Float,
 Frequency integer,
@@ -477,7 +476,7 @@ DestLat smallint,
 DestLong smallint
 )
 
-INSERT INTO analysis_5
+INSERT INTO analysis_4_1
 SELECT f.PathID, f.DivertedProportion, f.Frequency, f.Origin, f.Dest, a1.lat AS OriginLat, a1.long AS OriginLong, a2.lat AS DestLat, a2.long AS DestLong
 FROM (
 SELECT Origin || 'to' || Dest AS PathId, AVG(Diverted) AS DivertedProportion, COUNT(*) AS Frequency, Origin, Dest
@@ -489,15 +488,52 @@ ON f.Origin = a1.iata
 JOIN airports AS a2
 ON f.Dest = a2.iata
 
+--Creating a new column that stores the PathID (Origin - Dest Flight Path).
 ALTER TABLE flights_staging2
 ADD COLUMN PathID varchar(50);
 
 UPDATE flights_staging2
 SET PathID = Origin || ' to ' || Dest;
 
+--Review flight information for PathID 'SUN to TWF'
 SELECT * FROM flights_staging2
 WHERE PathID = 'SUN to TWF'
 
+--Analysis 5: Do flight delays cause a ripple effect across subsequent flights?
+ALTER TABLE flights_staging2
+ADD COLUMN depdatetime timestamp;
+
+UPDATE flights_staging2
+SET depdatetime = make_timestamp(
+        EXTRACT(YEAR FROM fulldate)::int,
+        EXTRACT(MONTH FROM fulldate)::int,
+        EXTRACT(DAY FROM fulldate)::int,
+        EXTRACT(HOUR FROM CRSDeptime_timeformat)::int,
+        EXTRACT(MINUTE FROM CRSDeptime_timeformat)::int,
+        EXTRACT(SECOND FROM CRSDeptime_timeformat)::int)
+
+CREATE TABLE analysis_5 (
+TailNum varchar(50),
+PathID varchar(50),
+CurrentFlightDelay integer,
+SubsequentFlightDelay integer
+)
+
+INSERT INTO analysis_5
+SELECT a.TailNum AS TailNum, a.PathID AS PathID, a.Average_Delay AS CurrentFlightDelay, b.DepDelay AS SubsequentFlightDelay FROM
+(
+SELECT ROW_NUMBER() OVER(PARTITION BY TailNum ORDER BY depdatetime ASC) AS RowNum, PathID, TailNum, Average_Delay, DepDelay, ArrDelay
+FROM flights_staging2
+) AS a
+JOIN (
+SELECT ROW_NUMBER() OVER(PARTITION BY TailNum ORDER BY depdatetime ASC) AS RowNum, PathID, TailNum, Average_Delay, DepDelay, ArrDelay
+FROM flights_staging2
+) AS b
+ON a.TailNum = b.TailNum AND a.RowNum + 1 = b.RowNum
+WHERE a.DepDelay >= 15 AND a.ArrDelay >= 15
+
+SELECT * FROM analysis_5
+WHERE currentflightdelay < 0
 
 --Analysis 6: What is the popularity of carriers over the years?
 SELECT UniqueCarrier, Year, SUM(COUNT(*)) OVER (PARTITION BY UniqueCarrier ORDER BY Year) AS CumulativeFrequency
@@ -516,146 +552,3 @@ SELECT UniqueCarrier, Year, SUM(COUNT(*)) OVER (PARTITION BY UniqueCarrier ORDER
 FROM flights_staging2
 GROUP BY UniqueCarrier, Year
 ORDER BY UniqueCarrier, Year
-
---Analysis 7
-ALTER TABLE flights_staging2
-ADD COLUMN depdatetime timestamp;
-
-UPDATE flights_staging2
-SET depdatetime = make_timestamp(
-        EXTRACT(YEAR FROM fulldate)::int,
-        EXTRACT(MONTH FROM fulldate)::int,
-        EXTRACT(DAY FROM fulldate)::int,
-        EXTRACT(HOUR FROM CRSDeptime_timeformat)::int,
-        EXTRACT(MINUTE FROM CRSDeptime_timeformat)::int,
-        EXTRACT(SECOND FROM CRSDeptime_timeformat)::int)
-
-SELECT ROW_NUMBER() OVER(PARTITION BY TailNum ORDER BY depdatetime ASC) AS FlightOrder, Tailnum, DepDelay, ArrDelay, PathID
-FROM flights_staging2
-WHERE Diverted = 0 AND Cancelled = 0
-
-CREATE TABLE analysis_7(
-a_FlightOrder integer,
-a_Tailnum varchar(50),
-a_DepDelay smallint,
-a_ArrDelay smallint,
-a_Origin varchar(50),
-a_Dest varchar(50),
-a_PathID varchar(50),
-b_FlightOrder integer,
-b_Tailnum varchar(50),
-b_DepDelay smallint,
-b_ArrDelay smallint,
-b_PathID varchar(50)
-);
-
-INSERT INTO analysis_7
-SELECT a.FlightOrder AS a_FlightOrder, a.Tailnum AS a_Tailnum, a.DepDelay AS a_DepDelay, a.ArrDelay AS a_ArrDelay, a.Origin AS a_Origin, a.Dest AS a_Dest, a.PathID AS a_PathID, b.FlightOrder AS b_FlightOrder, b.Tailnum AS b_TailNum, b.DepDelay AS b_DepDelay, b.ArrDelay AS b_ArrDelay, b.PathID AS b_PathID
-FROM(SELECT ROW_NUMBER() OVER(PARTITION BY TailNum ORDER BY depdatetime ASC) AS FlightOrder, Tailnum, DepDelay, ArrDelay, Origin, Dest, PathID
-FROM flights_staging2
-WHERE Diverted = 0 AND Cancelled = 0) AS a
-JOIN (SELECT ROW_NUMBER() OVER(PARTITION BY TailNum ORDER BY depdatetime ASC) AS FlightOrder, Tailnum, DepDelay, ArrDelay, PathID
-FROM flights_staging2
-WHERE Diverted = 0 AND Cancelled = 0) AS b
-ON a.FlightOrder + 1 = b.FlightOrder AND a.Tailnum = b.Tailnum
-WHERE a.DepDelay > 15 AND a.ArrDelay > 15
-
-
-SELECT a_Tailnum, a_Origin, a_Dest, a_PathID, AVG(
-CASE
-		WHEN b_DepDelay > a_ArrDelay THEN 1
-		ELSE 0
-	END
-) AS Cascade_Proportion,
-COUNT(*) AS Frequency
-FROM analysis_7
-GROUP BY a_Tailnum, a_Origin, a_Dest, a_PathID
-ORDER BY Cascade_Proportion DESC;
-
-SELECT a.a_Tailnum AS Tailnum, a.a_Origin AS Origin, a.a_Dest AS Dest, a.a_PathID AS PathID, a.Cascade_Proportion AS CascadeProportion, a.Frequency AS Frequency, b.lat AS OriginLat, b.long AS OriginLong, c.lat AS DestLat, c.long AS DestLong
-FROM (
-SELECT a_Tailnum, a_Origin, a_Dest, a_PathID, AVG(
-CASE
-		WHEN b_DepDelay > a_ArrDelay THEN 1
-		ELSE 0
-	END
-) AS Cascade_Proportion,
-COUNT(*) AS Frequency
-FROM analysis_7
-GROUP BY a_Tailnum, a_Origin, a_Dest, a_PathID
-ORDER BY Cascade_Proportion DESC
-) AS a
-JOIN airports AS b
-ON a.a_Origin = b.iata
-JOIN airports AS c
-ON a.a_Dest = c.iata
-
-CREATE TABLE analysis_7_1(
-Tailnum varchar(50),
-Origin varchar(50),
-Dest varchar(50),
-PathID varchar(50),
-CascadeProportion float,
-Frequency integer,
-OriginLat integer,
-OriginLong integer,
-DestLat integer,
-DestLong integer
-);
-
-
-INSERT INTO analysis_7_1
-SELECT a.a_Tailnum AS Tailnum, a.a_Origin AS Origin, a.a_Dest AS Dest, a.a_PathID AS PathID, a.Cascade_Proportion AS CascadeProportion, a.Frequency AS Frequency, b.lat AS OriginLat, b.long AS OriginLong, c.lat AS DestLat, c.long AS DestLong
-FROM (
-SELECT a_Tailnum, a_Origin, a_Dest, a_PathID, AVG(
-CASE
-		WHEN b_DepDelay > a_ArrDelay THEN 1
-		ELSE 0
-	END
-) AS Cascade_Proportion,
-COUNT(*) AS Frequency
-FROM analysis_7
-GROUP BY a_Tailnum, a_Origin, a_Dest, a_PathID
-ORDER BY Cascade_Proportion DESC
-) AS a
-JOIN airports AS b
-ON a.a_Origin = b.iata
-JOIN airports AS c
-ON a.a_Dest = c.iata
-
-SELECT * FROM analysis_7_1
-ORDER BY Frequency DESC
-
-WITH YearlyFlightFreqCTE AS
-(SELECT Year, COUNT(*) AS YearTotal
-FROM flights_staging2
-GROUP BY Year)
-SELECT a.Pathid, a.Year, a.Frequency, ROW_NUMBER() OVER (PARTITION BY a.Year ORDER BY a.Year Desc, a.Frequency Desc) AS RowNum, a.Frequency / b.YearTotal AS FlightPercentage
-FROM(
-SELECT Pathid, Year, COUNT(*) AS Frequency
-FROM flights_staging2
-GROUP BY Year, Pathid) AS a
-JOIN YearlyFlightFreqCTE AS b
-ON a.Year = b.Year
-
-CREATE TABLE analysis_8
-(
-PathID varchar(50),
-Year smallint,
-Frequency integer,
-RowNum integer,
-FlightPercentage Float
-)
-
-INSERT INTO analysis_8
-WITH YearlyFlightFreqCTE AS
-(SELECT Year, COUNT(*) AS YearTotal
-FROM flights_staging2
-GROUP BY Year)
-SELECT a.Pathid, a.Year, a.Frequency, ROW_NUMBER() OVER (PARTITION BY a.Year ORDER BY a.Year Desc, a.Frequency Desc) AS RowNum, a.Frequency / b.YearTotal AS FlightPercentage
-FROM(
-SELECT Pathid, Year, COUNT(*) AS Frequency
-FROM flights_staging2
-GROUP BY Year, Pathid) AS a
-JOIN YearlyFlightFreqCTE AS b
-ON a.Year = b.Year
